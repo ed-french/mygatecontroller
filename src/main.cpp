@@ -35,7 +35,7 @@ To do:
       DELAY_BEFORE_TRYING_TO_CLEAR_STUCK
       DELAY_BEFORE_CLOSING_GATE_MS
       FULL_PWM_RATE
-      
+
 
 
 
@@ -48,6 +48,12 @@ To do:
 
 
 #include <Arduino.h>
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <AsyncElegantOTA.h>
+
+#include "credentials.h" // Just includes ssid and password declarations and ota_username and ota_password
 
 #define PIN_END_TRIP 19
 #define END_TRIP_HIT false
@@ -92,6 +98,8 @@ To do:
 #define FULL_PWM_RATE 200
 #define PWM_FREQUENCY 10000
 
+char hostname[]="nunshallpass";
+
 enum GateStates 
 {
   CLOSED='C',
@@ -119,6 +127,9 @@ GateState gate;
 
 
 char temp_buff[255];
+
+AsyncWebServer server(80);
+
 
 
 void change_gate_state(GateStates new_state)
@@ -414,6 +425,50 @@ void setup() {
   pinMode(PIN_INSIDE_BUTTON,INPUT);
   pinMode(PIN_OUTSIDE_BUTTON,INPUT);
   change_gate_state(CLOSED);
+
+  
+  WiFi.setHostname(hostname);
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  delay(1000);
+  WiFi.begin(ssid, password);
+  delay(1000);
+  Serial.printf("Connecting to: %s\n",ssid);
+  Serial.println("");
+
+  // Wait for connection
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.print("Connected to ");
+  Serial.println(ssid);
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(200, "text/plain", "Hi. NunShallPass is your gate slave.\n* Use /open to open the gate\n use /reboot24v to switch on and off the 24v auxilliary output\nUse /update to install new firmware remotely");
+  });
+
+  server.on("/open",HTTP_GET,[](AsyncWebServerRequest *request)
+  {
+    if (gate.state!=OPENING)
+    {
+      Serial.println("Web request received to open gate");
+      strcpy(temp_buff,"Gate is now opening!");
+      start_opening_gate();
+    } else {
+      Serial.println("Ignoring request to open gate that's already opening");
+      strcpy(temp_buff,"Ignoring gate open request as it's already opening");
+    }
+    request->send(200,"text/plain",temp_buff);
+    
+  });
+
+  AsyncElegantOTA.begin(&server,ota_username,ota_password);    // Start AsyncElegantOTA
+  server.begin();
+  Serial.println("HTTP server started");
 
 }
 
