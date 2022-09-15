@@ -10,8 +10,6 @@ To do:
 
   Essentials for implementation
 
-  1. Test wifi signal strength
-    -> Implement powering off 24v on webseerver message
     
     
   Optional:
@@ -91,6 +89,8 @@ To do:
 #define TWENTY_FOUR_VOLT_RELAY_NORMAL true
 #define TWENTY_FOUR_VOLT_RELAY_DISCONNECTED false
 
+#define TWENTY_FOUR_VOLT_RELAY_INTERRUPT_TIME_MS 10000
+
 #define DELAY_BEFORE_TRYING_TO_CLEAR_STUCK_MS 10000
 
 #define PIN_BEAM 14
@@ -117,6 +117,15 @@ To do:
   #define HTTP_REQUEST_INTERVAL     1  //300
 
 char hostname[]="nunshallpass";
+
+struct RelayState
+{
+  bool connected;
+  uint32_t restore_time;
+};
+
+RelayState twentyfourvoltrelay;
+
 
 enum GateStates 
 {
@@ -405,8 +414,9 @@ void stop_motor(bool success)
   }
 }
 
-void start_opening_gate(uint32_t time_to_ignore_endstops=IGNORE_ENDSTOP_DURATION_MS)
+void start_opening_gate(const char * reason,uint32_t time_to_ignore_endstops=IGNORE_ENDSTOP_DURATION_MS)
 {
+  Serial.printf("Opening gate due to: %s\n",reason);
   gate.time_to_ignore_endstops_ms=time_to_ignore_endstops;
   move_gate(true,FULL_PWM_RATE,40000);
   change_gate_state(OPENING);
@@ -511,6 +521,8 @@ void setup() {
   pinMode(PIN_OUTSIDE_BUTTON,INPUT);
   change_gate_state(CLOSED);
 
+  twentyfourvoltrelay.connected=true;
+
   
   WiFi.setHostname(hostname);
   WiFi.mode(WIFI_STA);
@@ -542,12 +554,22 @@ void setup() {
     {
       Serial.println("Web request received to open gate");
       strcpy(temp_buff,"Gate is now opening!");
-      start_opening_gate();
+      start_opening_gate("request from web");
     } else {
       Serial.println("Ignoring request to open gate that's already opening");
       strcpy(temp_buff,"Ignoring gate open request as it's already opening");
     }
     request->send(200,"text/plain",temp_buff);
+    
+  });
+
+  server.on("/reboot24v",HTTP_GET,[](AsyncWebServerRequest *request) {
+    send_message((char *)"about%20to%20interrupt%20twenty%20four%20volt%20system");
+    digitalWrite(PIN_TWENTY_FOUR_VOLT_RELAY,TWENTY_FOUR_VOLT_RELAY_DISCONNECTED); // Cut relay
+    Serial.println("Cutting 24v");
+    twentyfourvoltrelay.restore_time=millis()+TWENTY_FOUR_VOLT_RELAY_INTERRUPT_TIME_MS;
+    twentyfourvoltrelay.connected=false;
+    request->send(200,"text/plain","Done");
     
   });
 
@@ -575,24 +597,20 @@ void loop() {
   uint32_t time_since_state_change=millis()-gate.state_change_time;
 
   bool mot_done=run_motor();
-  if (get_beam_broken())
+  if (get_beam_broken() && gate.state==CLOSING)
   {
     // Send open command
-    uint32_t time_to_ignore_endstops=IGNORE_ENDSTOP_DURATION_MS;
-    if (gate.state==CLOSING)
-    {
-      time_to_ignore_endstops=500;
-    }
-    start_opening_gate(time_to_ignore_endstops);
+    send_message((char *)"Beam%20Broken%20during%20close-%20reopening");
+    start_opening_gate("beam broken",500);
   }
   if (get_outer_button_pressed())
   {
     send_gate_open_request_message();
-    start_opening_gate();
+    start_opening_gate("outer button pressed");
   }
   if (get_inner_button_pressed() || get_near_button_pressed())
   {
-    start_opening_gate();
+    start_opening_gate("inner button or near button pressed");
   }
 
   // Timeout stuck state
@@ -601,7 +619,7 @@ void loop() {
     if (gate.state==STUCK_WHILE_CLOSING || gate.state==STUCK_WHILE_OPENING)
     {
       Serial.println("!!!!!Waited to long enough for stuck gate to clear; now trying open...");
-      start_opening_gate(); // Try to open the gate to clear the error
+      start_opening_gate("retry after getting stuck"); // Try to open the gate to clear the error
     }
   }
   // Close gate after delay
@@ -614,6 +632,16 @@ void loop() {
   {
     send_message((char*)"heartbeat");
     next_heartbeat_time=millis()+HEARTBEAT_INTERVAL_MS;
+  }
+
+  // Check if relay should be reconnected
+  if (!twentyfourvoltrelay.connected && millis()>twentyfourvoltrelay.restore_time)
+  {
+    digitalWrite(PIN_TWENTY_FOUR_VOLT_RELAY,TWENTY_FOUR_VOLT_RELAY_NORMAL);
+    twentyfourvoltrelay.connected=true;
+    Serial.println("Reconnected 24v");
+    send_message((char *)"Reconnected%2024v");
+
   }
 
   delay(WAIT_LOOP_DELAY_MS);
