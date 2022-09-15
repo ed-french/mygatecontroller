@@ -11,12 +11,7 @@ To do:
   Essentials for implementation
 
   1. Test wifi signal strength
-    -> Implement opening on webserver message
-    -> Implement sending log message to server somehow
     -> Implement powering off 24v on webseerver message
-    -> Implement send server message on outer button press
-    -> Implement send server message on getting stuck
-    -> Implement watchdog to check it isn't stuck open
     
     
   Optional:
@@ -35,6 +30,10 @@ To do:
       DELAY_BEFORE_TRYING_TO_CLEAR_STUCK
       DELAY_BEFORE_CLOSING_GATE_MS
       FULL_PWM_RATE
+      HEARTBEAT_INTERVAL
+      ASYNC_HTTP_LOGLEVEL_
+      HTTP_REQUEST_INTERVAL
+      HEARTBEAT_INTERVAL
 
 
 
@@ -43,7 +42,13 @@ To do:
 
 
 
+#if !( defined(ESP8266) ||  defined(ESP32) )
+  #error This code is intended to run on the ESP8266 or ESP32 platform! Please check your Tools->Board setting.
+#endif
 
+
+#define ASYNC_HTTP_REQUEST_GENERIC_VERSION_MIN_TARGET      "AsyncHTTPRequest_Generic v1.9.1"
+#define ASYNC_HTTP_REQUEST_GENERIC_VERSION_MIN             1009001
 
 
 
@@ -52,6 +57,9 @@ To do:
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncElegantOTA.h>
+#include <AsyncHTTPRequest_Generic.h>
+
+
 
 #include "credentials.h" // Just includes ssid and password declarations and ota_username and ota_password
 
@@ -97,6 +105,16 @@ To do:
 
 #define FULL_PWM_RATE 200
 #define PWM_FREQUENCY 10000
+#define HEARTBEAT_INTERVAL_MS 60000
+
+
+// Async http lib defines...
+  // Level from 0-4
+  #define ASYNC_HTTP_DEBUG_PORT     Serial
+  #define _ASYNC_HTTP_LOGLEVEL_     1
+
+  // 300s = 5 minutes to not flooding
+  #define HTTP_REQUEST_INTERVAL     1  //300
 
 char hostname[]="nunshallpass";
 
@@ -121,6 +139,12 @@ struct GateState
   float amps_per_bit=5.0/1402;
 };
 
+AsyncHTTPRequest request; 
+
+
+
+
+
 
 
 GateState gate;
@@ -128,9 +152,66 @@ GateState gate;
 
 char temp_buff[255];
 
+char message_buffer[1023]; // NOTE MAXIMUM MESSAGE SIZE!
+
 AsyncWebServer server(80);
 
+uint32_t next_heartbeat_time;
 
+
+
+void requestCB(void *optParm, AsyncHTTPRequest *request, int readyState)
+{
+  (void) optParm;
+
+  if (readyState == readyStateDone)
+  {
+    AHTTP_LOGDEBUG(F("\n**************************************"));
+    AHTTP_LOGDEBUG1(F("Response Code = "), request->responseHTTPString());
+
+    if (request->responseHTTPcode() == 200)
+    {
+      Serial.println(F("\n**************************************"));
+      Serial.println(request->responseText());
+      Serial.println(F("**************************************"));
+    }
+  }
+}
+
+
+void send_message(char * message)
+{
+  Serial.printf("*SENDING* %s\n",message);
+  
+  static bool requestOpenResult;
+
+  char url[1400];
+
+  strcpy(url,"http://192.168.1.125/rx_gate_message?message=");
+  strcat(url,message);
+
+ 
+  
+  if (request.readyState() == readyStateUnsent || request.readyState() == readyStateDone)
+  {
+    //requestOpenResult = request.open("GET", "http://worldtimeapi.org/api/timezone/Europe/London.txt");
+    requestOpenResult = request.open("GET", url);
+    Serial.printf("Sent to url: %s\n",url);
+    if (requestOpenResult)
+    {
+      // Only send() if open() returns true, or crash
+      request.send();
+    }
+    else
+    {
+      Serial.println(F("Can't send bad request"));
+    }
+  }
+  else
+  {
+    Serial.println(F("Can't send request now as one is still pending!"));
+  }
+}
 
 void change_gate_state(GateStates new_state)
 {
@@ -140,10 +221,12 @@ void change_gate_state(GateStates new_state)
 }
 
 
-void send_message(char * mess)
-{
-  Serial.printf("*** %s\n",mess);
-}
+
+
+// void send_message(char * mess)
+// {
+//   Serial.printf("*** %s\n",mess);
+// }
 
 
 bool get_beam_broken()
@@ -168,7 +251,8 @@ bool get_near_button_pressed()
 
 void send_gate_open_request_message()
 {
-  send_message((char *)"Outer gate button pressed");
+  send_message((char *)"Outer%20gate%20button%20pressed");
+  delay(200);
 }
 
 
@@ -280,6 +364,7 @@ void move_gate(bool open,uint8_t pwm,uint32_t timeout_ms=DEFAULT_MAX_MOTOR_DURAT
 
 }
 
+
 void stop_motor(bool success)
 {
   set_up_motor();
@@ -289,32 +374,32 @@ void stop_motor(bool success)
     {
       case OPENING:
         change_gate_state(WAITING_TO_CLOSE);
-        send_message((char *)"Gate now open");
+        send_message((char *)"Gate%20now%20open");
         break;
       case CLOSING:
         change_gate_state(CLOSED);
-        send_message((char *)"Gate now closed");
+        send_message((char *)"Gate%20now%20closed");
         break;
       default:
-        sprintf(temp_buff,"Stop motor called when gate was neither opening nor closing (state=%d)",gate.state);
+        sprintf(temp_buff,"Stop%20motor%20called%20when%20gate%20was%20neither%20opening%20nor%20closing%20(state=%d)",gate.state);
         send_message(temp_buff);
     }
   } else {
-    send_message((char*)"Motor stopped with error condition");
+    send_message((char*)"Motor%20stopped%20with%20error%20condition");
     switch (gate.state)
     {
       case OPENING:
         change_gate_state(STUCK_WHILE_OPENING);
-        send_message((char *)"Gate stuck during opening");
+        send_message((char *)"Gate%20stuck%20during%20opening");
         break;
 
       case CLOSING:
         change_gate_state(STUCK_WHILE_CLOSING);
-        send_message((char *)"Gate stuck during closing");
+        send_message((char *)"Gate%20stuck%20during%20closing");
         break;
 
       default:
-        sprintf(temp_buff,"Stop motor called when gate was neither opening nor closing (state=%d)",gate.state);
+        sprintf(temp_buff,"Stopmotor%20called%20when%20gatewas%20neither%20opening%20nor%20closing%20(state=%d)",gate.state);
         send_message(temp_buff);
     } 
   }
@@ -470,6 +555,17 @@ void setup() {
   server.begin();
   Serial.println("HTTP server started");
 
+
+
+  request.setDebug(false);
+  
+  request.onReadyStateChange(requestCB);
+
+
+
+  next_heartbeat_time=millis()+HEARTBEAT_INTERVAL_MS;
+  send_message((char *)"gate%20booted");
+
 }
 
 void loop() {
@@ -512,6 +608,12 @@ void loop() {
   if ((time_since_state_change>DELAY_BEFORE_CLOSING_GATE_MS) && (gate.state==WAITING_TO_CLOSE))
   {
     start_closing_gate();
+  }
+
+  if (millis()>next_heartbeat_time)
+  {
+    send_message((char*)"heartbeat");
+    next_heartbeat_time=millis()+HEARTBEAT_INTERVAL_MS;
   }
 
   delay(WAIT_LOOP_DELAY_MS);
