@@ -31,7 +31,7 @@ To do:
       HEARTBEAT_INTERVAL
       ASYNC_HTTP_LOGLEVEL_
       HTTP_REQUEST_INTERVAL
-      HEARTBEAT_INTERVAL
+
 
 
 
@@ -76,11 +76,11 @@ To do:
 
 #define DEFAULT_MAX_MOTOR_DURATION_MS 10000
 
-#define MOTOR_CURRENT_LIMIT 4.000
+#define MOTOR_CURRENT_LIMIT 3.000
 
 #define IGNORE_ENDSTOP_DURATION_MS 1500
 
-#define WAIT_LOOP_DELAY_MS 500
+#define WAIT_LOOP_DELAY_MS 100
 
 #define PWM_CHANNEL_OPEN 0
 #define PWM_CHANNEL_CLOSE 1
@@ -101,11 +101,11 @@ To do:
 #define PIN_OUTSIDE_BUTTON 25
 #define BUTTON_PRESSED false
 
-#define DELAY_BEFORE_CLOSING_GATE_MS 30000
+#define DELAY_BEFORE_CLOSING_GATE_MS 80000
 
 #define FULL_PWM_RATE 200
 #define PWM_FREQUENCY 10000
-#define HEARTBEAT_INTERVAL_MS 60000
+#define HEARTBEAT_INTERVAL_MS 300000 // 5 minutes=300000
 
 
 // Async http lib defines...
@@ -610,6 +610,7 @@ void loop() {
   }
   if (get_inner_button_pressed() || get_near_button_pressed())
   {
+    send_message((char *)"Opening%20for%20inner%20or%20nearside%20button");
     start_opening_gate("inner button or near button pressed");
   }
 
