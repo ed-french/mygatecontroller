@@ -186,7 +186,9 @@ void requestCB(void *optParm, AsyncHTTPRequest *request, int readyState)
 }
 
 
-void send_message(char * message)
+
+
+void send_message(const char * message)
 {
   Serial.printf("*SENDING* %s\n",message);
   
@@ -194,8 +196,21 @@ void send_message(char * message)
 
   char url[1400];
 
+  char next_to_add[5];
+
   strcpy(url,"http://192.168.1.125/rx_gate_message?message=");
-  strcat(url,message);
+  for (uint16_t i=0;i<strlen(message);i++)
+  {
+    char c=message[i];
+    if (c==32)
+    {
+      strcpy(next_to_add,"%20");
+    } else {
+      next_to_add[0]=c;
+      next_to_add[1]=0;
+    }
+    strcat(url,next_to_add);
+  }
 
  
   
@@ -224,7 +239,7 @@ void send_message(char * message)
 
 void restart_esp()
 {
-  send_message((char *)"Rebooting in 10 seconds");
+  send_message("Rebooting in 10 seconds");
   delay(10000);
   ESP.restart();
 }
@@ -268,7 +283,7 @@ bool get_near_button_pressed()
 
 void send_gate_open_request_message()
 {
-  send_message((char *)"Outer%20gate%20button%20pressed");
+  send_message("Outer gate button pressed");
   delay(200);
 }
 
@@ -391,32 +406,32 @@ void stop_motor(bool success)
     {
       case OPENING:
         change_gate_state(WAITING_TO_CLOSE);
-        send_message((char *)"Gate%20now%20open");
+        send_message("Gate now open");
         break;
       case CLOSING:
         change_gate_state(CLOSED);
-        send_message((char *)"Gate%20now%20closed");
+        send_message("Gate now closed");
         break;
       default:
-        sprintf(temp_buff,"Stop%20motor%20called%20when%20gate%20was%20neither%20opening%20nor%20closing%20(state=%d)",gate.state);
+        sprintf(temp_buff,"Stop motor called when gate was neither opening nor closing -state %d",gate.state);
         send_message(temp_buff);
     }
   } else {
-    send_message((char*)"Motor%20stopped%20with%20error%20condition");
+    send_message("Motor stopped with error condition");
     switch (gate.state)
     {
       case OPENING:
         change_gate_state(STUCK_WHILE_OPENING);
-        send_message((char *)"Gate%20stuck%20during%20opening");
+        send_message("Gate stuck during opening");
         break;
 
       case CLOSING:
         change_gate_state(STUCK_WHILE_CLOSING);
-        send_message((char *)"Gate%20stuck%20during%20closing");
+        send_message("Gate stuck during closing");
         break;
 
       default:
-        sprintf(temp_buff,"Stopmotor%20called%20when%20gatewas%20neither%20opening%20nor%20closing%20(state=%d)",gate.state);
+        sprintf(temp_buff,"Stopmotor called when gatewas neither opening nor closing - state=%d",gate.state);
         send_message(temp_buff);
     } 
   }
@@ -577,7 +592,7 @@ void setup() {
   });
 
   server.on("/reboot24v",HTTP_GET,[](AsyncWebServerRequest *request) {
-    send_message((char *)"about%20to%20interrupt%20twenty%20four%20volt%20system");
+    send_message("about to interrupt twenty four volt system");
     digitalWrite(PIN_TWENTY_FOUR_VOLT_RELAY,TWENTY_FOUR_VOLT_RELAY_DISCONNECTED); // Cut relay
     Serial.println("Cutting 24v");
     twentyfourvoltrelay.restore_time=millis()+TWENTY_FOUR_VOLT_RELAY_INTERRUPT_TIME_MS;
@@ -612,7 +627,7 @@ void setup() {
 
 
   next_heartbeat_time=millis()+HEARTBEAT_INTERVAL_MS;
-  send_message((char *)"gate%20booted");
+  send_message("gate booted");
 
 }
 
@@ -626,7 +641,7 @@ void loop() {
   if (get_beam_broken() && gate.state==CLOSING)
   {
     // Send open command
-    send_message((char *)"Beam%20Broken%20during%20close-%20reopening");
+    send_message("Beam Broke during close- reopening");
     start_opening_gate("beam broken",500);
   }
   if (get_outer_button_pressed() && gate.state!=OPENING)
@@ -636,12 +651,12 @@ void loop() {
   }
   if (get_inner_button_pressed() && gate.state!=OPENING)
   {
-    send_message((char *)"Opening+for+inner+button");
+    send_message("Opening for inner button");
     start_opening_gate("inner button pressed");
   }
   if (get_near_button_pressed() && gate.state!=OPENING)
   {
-    send_message((char *)"Opening+for+nearside+button");
+    send_message("Opening for nearside button");
     start_opening_gate("nearside button pressed");
   }
 
@@ -663,7 +678,7 @@ void loop() {
   if (millis()>next_heartbeat_time)
   {
     sprintf(temp_buff,"heartbeat+free+%d",ESP.getFreeHeap());
-    send_message((char*)temp_buff);
+    send_message(temp_buff);
     next_heartbeat_time=millis()+HEARTBEAT_INTERVAL_MS;
   }
 
@@ -673,7 +688,7 @@ void loop() {
     digitalWrite(PIN_TWENTY_FOUR_VOLT_RELAY,TWENTY_FOUR_VOLT_RELAY_NORMAL);
     twentyfourvoltrelay.connected=true;
     Serial.println("Reconnected 24v");
-    send_message((char *)"Reconnected%2024v");
+    send_message("Reconnected 24v");
 
   }
 
