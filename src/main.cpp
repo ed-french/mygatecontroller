@@ -8,12 +8,6 @@
 
 To do:
 
-  Essentials for implementation
-    Implement watchdog reset-y
-    Implement reset endpoint-y
-    Stop repeat opens from button presses- should function during closing or whilst open
-    Implement free memory endpoint-y
-    Implement sending free memory with heartbeat
 
 
     
