@@ -9,6 +9,12 @@
 To do:
 
   Essentials for implementation
+    Implement watchdog reset-y
+    Implement reset endpoint-y
+    Stop repeat opens from button presses- should function during closing or whilst open
+    Implement free memory endpoint-y
+    Implement sending free memory with heartbeat
+
 
     
     
@@ -105,7 +111,7 @@ To do:
 
 #define FULL_PWM_RATE 200
 #define PWM_FREQUENCY 10000
-#define HEARTBEAT_INTERVAL_MS 300000 // 5 minutes=300000
+#define HEARTBEAT_INTERVAL_MS 600000 // 5 minutes=300000
 
 
 // Async http lib defines...
@@ -152,7 +158,12 @@ AsyncHTTPRequest request;
 
 
 
-
+void restart_esp()
+{
+  send_message((char *)"Rebooting in 10 seconds");
+  delay(10000);
+  ESP.restart();
+}
 
 
 
@@ -545,7 +556,12 @@ void setup() {
   Serial.println(WiFi.localIP());
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(200, "text/plain", "Hi. NunShallPass is your gate slave.\n* Use /open to open the gate\n use /reboot24v to switch on and off the 24v auxilliary output\nUse /update to install new firmware remotely");
+    request->send(200, "text/plain", "Hi. NunShallPass is your gate slave.\n"
+                        "\t* Use /open to open the gate\n"
+                        "\tuse /reboot24v to switch on and off the 24v auxilliary output\n"
+                        "\tUse /update to install new firmware remotely\n"
+                        "\tUse /restart to reboot the ESP\n"
+                        "\tUse /getfreeheap to see how much is free\n");
   });
 
   server.on("/open",HTTP_GET,[](AsyncWebServerRequest *request)
@@ -570,6 +586,19 @@ void setup() {
     twentyfourvoltrelay.restore_time=millis()+TWENTY_FOUR_VOLT_RELAY_INTERRUPT_TIME_MS;
     twentyfourvoltrelay.connected=false;
     request->send(200,"text/plain","Done");
+    
+  });
+
+    server.on("/restart",HTTP_GET,[](AsyncWebServerRequest *request) {
+    restart_esp();
+    request->send(200,"text/plain","Done");
+    
+  });
+
+    server.on("/getfreeheap",HTTP_GET,[](AsyncWebServerRequest *request) {
+    uint32_t free=ESP.getFreeHeap();
+    sprintf(temp_buff,"Free heap=%d",free);
+    request->send(200,"text/plain",temp_buff);
     
   });
 
@@ -603,15 +632,20 @@ void loop() {
     send_message((char *)"Beam%20Broken%20during%20close-%20reopening");
     start_opening_gate("beam broken",500);
   }
-  if (get_outer_button_pressed())
+  if (get_outer_button_pressed() && gate.state!=OPENING)
   {
     send_gate_open_request_message();
     start_opening_gate("outer button pressed");
   }
-  if (get_inner_button_pressed() || get_near_button_pressed())
+  if (get_inner_button_pressed() && gate.state!=OPENING)
   {
-    send_message((char *)"Opening%20for%20inner%20or%20nearside%20button");
-    start_opening_gate("inner button or near button pressed");
+    send_message((char *)"Opening+for+inner+button");
+    start_opening_gate("inner button pressed");
+  }
+  if (get_near_button_pressed() && gate.state!=OPENING)
+  {
+    send_message((char *)"Opening+for+nearside+button");
+    start_opening_gate("nearside button pressed");
   }
 
   // Timeout stuck state
@@ -631,7 +665,8 @@ void loop() {
 
   if (millis()>next_heartbeat_time)
   {
-    send_message((char*)"heartbeat");
+    sprintf(temp_buff,"heartbeat+free+%d",ESP.getFreeHeap());
+    send_message((char*)temp_buff);
     next_heartbeat_time=millis()+HEARTBEAT_INTERVAL_MS;
   }
 
@@ -645,6 +680,12 @@ void loop() {
 
   }
 
+  // Every day it resets automonously, but may be at a bad time of day
+  // However, the server sends a reset command every 4am, so it should sync to that
+  if (millis()>1000*60*60*24*1) 
+  {
+    restart_esp();
+  }
   delay(WAIT_LOOP_DELAY_MS);
 
 
