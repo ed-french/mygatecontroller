@@ -152,13 +152,6 @@ AsyncHTTPRequest request;
 
 
 
-void restart_esp()
-{
-  send_message((char *)"Rebooting in 10 seconds");
-  delay(10000);
-  ESP.restart();
-}
-
 
 
 GateState gate;
@@ -226,6 +219,16 @@ void send_message(char * message)
     Serial.println(F("Can't send request now as one is still pending!"));
   }
 }
+
+
+
+void restart_esp()
+{
+  send_message((char *)"Rebooting in 10 seconds");
+  delay(10000);
+  ESP.restart();
+}
+
 
 void change_gate_state(GateStates new_state)
 {
