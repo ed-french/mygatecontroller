@@ -100,6 +100,8 @@ To do:
 #define PIN_INSIDE_BUTTON 26
 #define PIN_OUTSIDE_BUTTON 25
 #define BUTTON_PRESSED false
+#define BUTTON_PRESS_CERTAINTY_TIME_MS 75
+#define BUTTON_UNUSED_TIMEOUT_MS 2000
 
 #define DELAY_BEFORE_CLOSING_GATE_MS 80000
 
@@ -117,6 +119,7 @@ To do:
   #define HTTP_REQUEST_INTERVAL     1  //300
 
 char hostname[]="nunshallpass";
+
 
 struct RelayState
 {
@@ -148,16 +151,93 @@ struct GateState
   float amps_per_bit=5.0/1402;
 };
 
+enum ButtonStates
+{
+  QUIET_UNPRESSED='Q',
+  TENTATIVELY_PRESSED='T',
+  PRESSED_WAITING_USE='P',
+  USED_WAITING_RELEASE='W'
+};
+
+struct ButtonState
+{
+  uint8_t pin_number;
+  ButtonStates state;
+  uint32_t pressed_time;
+};
+
+ButtonState outer_button;
+
 AsyncHTTPRequest request; 
 
+void update_button(ButtonState button)
+{
+  /*
+      Update the passed button based on reading it
+      returns quickly
+  */
+ bool now_pressed=(digitalRead(button.pin_number)==BUTTON_PRESSED);
 
+  switch (button.state)
+  {
+    case QUIET_UNPRESSED:
+      if (now_pressed)
+      {
+        button.state=TENTATIVELY_PRESSED;
+        button.pressed_time=millis();
+      }
+     return;
+    case TENTATIVELY_PRESSED:
+      if (!now_pressed)
+      {
+        // button released before being confirmed- probably noise
+        button.state=QUIET_UNPRESSED;
+        return;
+      }
+      if (millis()>(button.pressed_time+BUTTON_PRESS_CERTAINTY_TIME_MS))
+      {
+        button.state=PRESSED_WAITING_USE;
+        return;
+      }
+      return; // Just wait for tentative to be resolved either way
+    case PRESSED_WAITING_USE:
+      if (millis()>(button.pressed_time+BUTTON_UNUSED_TIMEOUT_MS))
+      {
+        if (now_pressed)
+        {
+          button.state=USED_WAITING_RELEASE;
+          return;
+        }
+        return;
+      }
+    case USED_WAITING_RELEASE:
+      if (!now_pressed)
+      {
+        button.state=QUIET_UNPRESSED;
+      }
+      return;
+  }
+}
 
+void use_button_press(ButtonState button)
+{
+  if (button.state==PRESSED_WAITING_USE)
+  {
+    if (digitalRead(button.pin_number)==BUTTON_PRESSED)
+    {
+      button.state=USED_WAITING_RELEASE;
+    } else {
+      button.state=QUIET_UNPRESSED;
+    }
+    return;
+  }
+}
 
 
 GateState gate;
 
 
-char temp_buff[255];
+char temp_buff[511];
 
 char message_buffer[1023]; // NOTE MAXIMUM MESSAGE SIZE!
 
@@ -184,6 +264,7 @@ void requestCB(void *optParm, AsyncHTTPRequest *request, int readyState)
     }
   }
 }
+
 
 
 
@@ -273,7 +354,9 @@ bool get_inner_button_pressed()
 
 bool get_outer_button_pressed()
 {
-  return (digitalRead(PIN_OUTSIDE_BUTTON)==BUTTON_PRESSED);
+  update_button(outer_button);
+
+  return (outer_button.state==PRESSED_WAITING_USE);
 }
 
 bool get_near_button_pressed()
@@ -281,11 +364,9 @@ bool get_near_button_pressed()
   return (digitalRead(PIN_NEAR_BUTTON)==BUTTON_PRESSED);
 }
 
-void send_gate_open_request_message()
-{
-  send_message("Outer gate button pressed");
-  delay(200);
-}
+
+  
+
 
 
 
@@ -398,6 +479,11 @@ void move_gate(bool open,uint8_t pwm,uint32_t timeout_ms=DEFAULT_MAX_MOTOR_DURAT
 
 
 void stop_motor(bool success)
+/*
+      success is a bool that indicates if we think we reached the end of travel
+      either through and endstop or high current measured
+
+*/
 {
   set_up_motor();
   if (success)
@@ -440,6 +526,8 @@ void stop_motor(bool success)
 void start_opening_gate(const char * reason,uint32_t time_to_ignore_endstops=IGNORE_ENDSTOP_DURATION_MS)
 {
   Serial.printf("Opening gate due to: %s\n",reason);
+  sprintf(temp_buff,"Gate opening due to %s",reason);
+  send_message(temp_buff);
   gate.time_to_ignore_endstops_ms=time_to_ignore_endstops;
   move_gate(true,FULL_PWM_RATE,40000);
   change_gate_state(OPENING);
@@ -458,7 +546,7 @@ bool end_trip_reached()
   return (raw==END_TRIP_HIT);
 }
 
-bool run_motor()
+void run_motor()
 {
   /* Non-blocking
     Checks state of motor:
@@ -466,16 +554,13 @@ bool run_motor()
         driver overloaded?
         current too-high?
         timed out?
-
-          - if so stops motor and returns false
-
-    returns true otherwise
+      Uses stop_motor to record the new state - passing true if we think we finished!
   */
 
   // Just return straight away if the motor isn't meant to be running at the moment!
   if (gate.state!=OPENING && gate.state!=CLOSING)
   {
-    return false; // Like reached the end already! 
+    return; // Like reached the end already! 
   }
 
   // Check too much current
@@ -483,17 +568,23 @@ bool run_motor()
   Serial.printf("\tFound motor current: %f",motor_current);
   if (motor_current>MOTOR_CURRENT_LIMIT)
   {
+
+    stop_motor(true); // assume we reached the end
     Serial.printf("Motor taking too much current, stopping with fault!");
-    stop_motor(false);
-    return false;
+    sprintf(temp_buff,"Motor current over limit- %f",motor_current);
+    send_message(temp_buff);
+    return;
   }
 
   // Check driver overload condition
   if (!motor_drivers_ok())
   {
+    
+    stop_motor(false);
     Serial.println("Motor driver overloaded, so stopping");
-    stop_motor(true);
-    return false;
+    strcpy(temp_buff,"Motor drivers were in error state");
+    send_message(temp_buff);
+    return;
   }
 
   // Check endstop reached
@@ -501,34 +592,26 @@ bool run_motor()
   {
     Serial.println("Reached endstop, stopping motor!");
     stop_motor(true);
-    return false;
+    strcpy(temp_buff,"endstop was reached");
+    send_message(temp_buff);
+
+
+    return;
   }
 
   // Check for timeout
   if (millis()>gate.timeout_time)
   {
     Serial.println("Stopping motor due to timeout");
-    stop_motor(false);
-    return false;
+    stop_motor(true);
+    send_message("motor stopped after timeout");
+    return;
   }
 
 
-  return true; // still moving!
+  return; // still moving!
 }
 
-void run_motor_until_done()
-{
-  while (run_motor())
-  {
-    delay(WAIT_LOOP_DELAY_MS);
-    Serial.print(".");
-  }
-}
-
-void set_24v_relay(bool on)
-{
-
-}
 
 
 void setup() {
@@ -573,7 +656,10 @@ void setup() {
                         "\tuse /reboot24v to switch on and off the 24v auxilliary output\n"
                         "\tUse /update to install new firmware remotely\n"
                         "\tUse /restart to reboot the ESP\n"
-                        "\tUse /getfreeheap to see how much is free\n");
+                        "\tUse /getfreeheap to see how much is free\n"
+                        "\tUse /getpinstates to see what state and raw inputs are now"
+                        "CLOSED'C'\tOPENING 'O'\tSTUCK_WHILE_OPENING 's'\tWAITING_TO_CLOSE='W'"
+                        "CLOSING 'V'\tSTUCK_WHILE_CLOSING 'x'");
   });
 
   server.on("/open",HTTP_GET,[](AsyncWebServerRequest *request)
@@ -601,18 +687,53 @@ void setup() {
     
   });
 
-    server.on("/restart",HTTP_GET,[](AsyncWebServerRequest *request) {
+  server.on("/restart",HTTP_GET,[](AsyncWebServerRequest *request) {
     restart_esp();
     request->send(200,"text/plain","Done");
     
   });
 
-    server.on("/getfreeheap",HTTP_GET,[](AsyncWebServerRequest *request) {
+  server.on("/getfreeheap",HTTP_GET,[](AsyncWebServerRequest *request) {
     uint32_t free=ESP.getFreeHeap();
     sprintf(temp_buff,"Free heap=%d",free);
     request->send(200,"text/plain",temp_buff);
     
   });
+
+  server.on("/getpinstates",HTTP_GET,[](AsyncWebServerRequest *request) {
+    char extra[80];
+    bool endtrip=end_trip_reached();
+    bool beambroke=get_beam_broken();
+    // sprintf(temp_buff,"Current state=%d\n"
+    //                     "Endtrip=%s\n"
+    //                     "Beam broken=%s\n"
+    //                     "Outer button pressed=%s\n",
+    //                     "Inner button pressed=%s\n",
+    //                     "Nearside button pressed=%s\n",
+    //                       gate.state,
+    //                       endtrip?"At End":"Not at end",
+    //                       beambroke?"Broken":"Not broken",
+    //                       get_outer_button_pressed()?"Pressed":"Not pressed",
+    //                       get_inner_button_pressed()?"Pressed":"Not pressed",
+    //                       get_near_button_pressed()?"Pressed":"Not pressed"
+    //                       );
+    strcpy(temp_buff,"Current state\n=============\n");
+    sprintf(extra,"Current state - %c\n",gate.state);
+    strcat(temp_buff,extra);
+
+    sprintf(extra,"Endtrip - %s\n",endtrip?"At End":"Not at end");
+    strcat(temp_buff,extra);
+
+    sprintf(extra,"Beam broken - %s\n",beambroke?"Broken":"Not broken");
+    strcat(temp_buff,extra);
+
+    sprintf(extra,"Outer button - %s\n",get_outer_button_pressed()?"Pressed":"Not pressed");
+    strcat(temp_buff,extra);
+
+    request->send(200,"text/plain",temp_buff);
+    
+  });
+
 
   AsyncElegantOTA.begin(&server,ota_username,ota_password);    // Start AsyncElegantOTA
   server.begin();
@@ -628,16 +749,18 @@ void setup() {
 
   next_heartbeat_time=millis()+HEARTBEAT_INTERVAL_MS;
   send_message("gate booted");
-
+  outer_button.state=QUIET_UNPRESSED;
+  outer_button.pin_number=PIN_OUTSIDE_BUTTON;
 }
 
-void loop() {
+void loop()
+{
 
   // Main loop
 
   uint32_t time_since_state_change=millis()-gate.state_change_time;
 
-  bool mot_done=run_motor();
+  run_motor();
   if (get_beam_broken() && gate.state==CLOSING)
   {
     // Send open command
@@ -646,8 +769,13 @@ void loop() {
   }
   if (get_outer_button_pressed() && gate.state!=OPENING)
   {
-    send_gate_open_request_message();
-    start_opening_gate("outer button pressed");
+      use_button_press(outer_button);// Mark that button press as used
+      send_message("Outer gate button pressed");
+      start_opening_gate("outer button pressed");
+
+
+
+
   }
   if (get_inner_button_pressed() && gate.state!=OPENING)
   {
@@ -666,6 +794,7 @@ void loop() {
     if (gate.state==STUCK_WHILE_CLOSING || gate.state==STUCK_WHILE_OPENING)
     {
       Serial.println("!!!!!Waited to long enough for stuck gate to clear; now trying open...");
+      send_message("Too long in stuck state - now opening");
       start_opening_gate("retry after getting stuck"); // Try to open the gate to clear the error
     }
   }
