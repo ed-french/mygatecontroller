@@ -170,7 +170,7 @@ ButtonState outer_button;
 
 AsyncHTTPRequest request; 
 
-void update_button(ButtonState button)
+void update_button(ButtonState &button)
 {
   /*
       Update the passed button based on reading it
@@ -219,7 +219,7 @@ void update_button(ButtonState button)
   }
 }
 
-void use_button_press(ButtonState button)
+void use_button_press(ButtonState &button)
 {
   if (button.state==PRESSED_WAITING_USE)
   {
@@ -767,7 +767,7 @@ void loop()
     send_message("Beam Broke during close- reopening");
     start_opening_gate("beam broken",500);
   }
-  if (get_outer_button_pressed() && gate.state!=OPENING)
+  if (get_outer_button_pressed() && gate.state!=OPENING) // true only when button state is PRESSED_WAITING_FOR_USE
   {
       use_button_press(outer_button);// Mark that button press as used
       send_message("Outer gate button pressed");
@@ -782,7 +782,7 @@ void loop()
     send_message("Opening for inner button");
     start_opening_gate("inner button pressed");
   }
-  if (get_near_button_pressed() && gate.state!=OPENING)
+  if (get_near_button_pressed() && gate.state!=OPENING) 
   {
     send_message("Opening for nearside button");
     start_opening_gate("nearside button pressed");
