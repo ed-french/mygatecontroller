@@ -56,6 +56,7 @@ To do:
 #include <ESPAsyncWebServer.h>
 #include <AsyncElegantOTA.h>
 #include <AsyncHTTPRequest_Generic.h>
+#include <Preferences.h>
 
 
 
@@ -109,6 +110,8 @@ To do:
 #define PWM_FREQUENCY 10000
 #define HEARTBEAT_INTERVAL_MS 600000 // 5 minutes=300000
 
+#define WIFI_AT_BOOT_TIMEOUT 50000 // 50 seconds
+
 
 // Async http lib defines...
   // Level from 0-4
@@ -120,6 +123,7 @@ To do:
 
 char hostname[]="nunshallpass";
 
+Preferences preferences;
 
 struct RelayState
 {
@@ -128,6 +132,9 @@ struct RelayState
 };
 
 RelayState twentyfourvoltrelay;
+
+
+char previous_restart_story[32];
 
 
 enum GateStates 
@@ -318,11 +325,19 @@ void send_message(const char * message)
 
 
 
-void restart_esp()
+void restart_esp(const char * reason)
 {
-  send_message("Rebooting in 10 seconds");
-  delay(10000);
-  ESP.restart();
+  preferences.putString("reason",reason);
+  if (WiFi.status()==WL_CONNECTED)
+  {
+    sprintf(temp_buff,"Rebooting in 10 seconds due to %s",reason);
+    send_message(temp_buff);
+    delay(10000);
+    ESP.restart();
+  }
+  ESP.restart(); // No point waiting if wifi is disconnected anyway!
+  
+
 }
 
 
@@ -629,6 +644,13 @@ void setup() {
 
   twentyfourvoltrelay.connected=true;
 
+  preferences.begin("gatectrl", false);
+
+  preferences.getString("reason",previous_restart_story,32);
+  preferences.putString("reason","unknown");
+
+
+
   
   WiFi.setHostname(hostname);
   WiFi.mode(WIFI_STA);
@@ -639,11 +661,26 @@ void setup() {
   Serial.printf("Connecting to: %s\n",ssid);
   Serial.println("");
 
+  uint32_t wifi_timeout=millis()+WIFI_AT_BOOT_TIMEOUT;
+
   // Wait for connection
-  while (WiFi.status() != WL_CONNECTED) {
+  while (true)
+  {
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      Serial.println("\nWifi now connected");
+      break;
+    }
+    if (millis()>wifi_timeout)
+    {
+      Serial.println("Pointless message saying we are restarting to have another go at connecting");
+      restart_esp("wifi boot timeout");
+    }
+    
     delay(500);
     Serial.print(".");
   }
+
   Serial.println("");
   Serial.print("Connected to ");
   Serial.println(ssid);
@@ -688,7 +725,7 @@ void setup() {
   });
 
   server.on("/restart",HTTP_GET,[](AsyncWebServerRequest *request) {
-    restart_esp();
+    restart_esp("web request");
     request->send(200,"text/plain","Done");
     
   });
@@ -748,7 +785,9 @@ void setup() {
 
 
   next_heartbeat_time=millis()+HEARTBEAT_INTERVAL_MS;
-  send_message("gate booted");
+
+  sprintf(temp_buff,"gate booted after %s",previous_restart_story);
+  send_message(temp_buff);
   outer_button.state=QUIET_UNPRESSED;
   outer_button.pin_number=PIN_OUTSIDE_BUTTON;
 }
@@ -823,9 +862,13 @@ void loop()
 
   // Every day it resets automonously, but may be at a bad time of day
   // However, the server sends a reset command every 4am, so it should sync to that
-  if (millis()>1000*60*60*24*1) 
+  if (millis()>1000*60*60*24*1)
   {
-    restart_esp();
+    restart_esp("daily reboot");
+  }
+  if (WiFi.status() != WL_CONNECTED) 
+  {
+    restart_esp("wifi lost");
   }
   delay(WAIT_LOOP_DELAY_MS);
 
