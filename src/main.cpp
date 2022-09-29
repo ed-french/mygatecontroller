@@ -77,9 +77,12 @@ To do:
 
 #define DEFAULT_MAX_MOTOR_DURATION_MS 10000
 
-#define MOTOR_CURRENT_LIMIT 3.000
+#define MOTOR_CURRENT_LIMIT_RUNNING 3.000
+#define MOTOR_CURRENT_LIMIT_STARTING 4.000
+#define SEND_CURRENT_INTERVAL_MS 1000
+#define STARTING_CURRENT_INTERVAL_MS 1000
 
-#define IGNORE_ENDSTOP_DURATION_MS 1500
+#define IGNORE_ENDSTOP_DURATION_MS 60000
 
 #define WAIT_LOOP_DELAY_MS 100
 
@@ -136,6 +139,7 @@ RelayState twentyfourvoltrelay;
 
 char previous_restart_story[32];
 
+uint32_t next_current_sent_time=0;
 
 enum GateStates 
 {
@@ -493,7 +497,7 @@ void move_gate(bool open,uint8_t pwm,uint32_t timeout_ms=DEFAULT_MAX_MOTOR_DURAT
 }
 
 
-void stop_motor(bool success)
+void stop_motor(bool success,const char * reason)
 /*
       success is a bool that indicates if we think we reached the end of travel
       either through and endstop or high current measured
@@ -507,34 +511,37 @@ void stop_motor(bool success)
     {
       case OPENING:
         change_gate_state(WAITING_TO_CLOSE);
-        send_message("Gate now open");
+        sprintf(temp_buff,"Gate now open after %s",reason);
+        send_message(temp_buff);
         break;
       case CLOSING:
         change_gate_state(CLOSED);
-        send_message("Gate now closed");
+        sprintf(temp_buff,"Gate now closed after %s",reason);
+        send_message(temp_buff);
         break;
       default:
-        sprintf(temp_buff,"Stop motor called when gate was neither opening nor closing -state %d",gate.state);
+        sprintf(temp_buff,"Stop motor called when gate was neither opening nor closing state %d   reason %s",gate.state,reason);
         send_message(temp_buff);
     }
   } else {
-    send_message("Motor stopped with error condition");
+    char state_name[20];
     switch (gate.state)
     {
       case OPENING:
-        change_gate_state(STUCK_WHILE_OPENING);
-        send_message("Gate stuck during opening");
+        strcpy(state_name,"opening");
         break;
 
       case CLOSING:
-        change_gate_state(STUCK_WHILE_CLOSING);
-        send_message("Gate stuck during closing");
+        strcpy(state_name,"closing");
         break;
 
       default:
-        sprintf(temp_buff,"Stopmotor called when gatewas neither opening nor closing - state=%d",gate.state);
-        send_message(temp_buff);
+        sprintf(state_name,"state:%d",gate.state);
     } 
+
+    sprintf(temp_buff,"Motor stopped with error  %s while %s",reason,state_name);
+    send_message(temp_buff);
+
   }
 }
 
@@ -573,56 +580,67 @@ void run_motor()
   */
 
   // Just return straight away if the motor isn't meant to be running at the moment!
+
+  
   if (gate.state!=OPENING && gate.state!=CLOSING)
   {
     return; // Like reached the end already! 
   }
+  
+  
+  uint32_t loop_time=millis();
+  uint32_t time_since_last_state_change=loop_time-gate.state_change_time;
 
   // Check too much current
   float motor_current=get_motor_current(); 
   Serial.printf("\tFound motor current: %f",motor_current);
-  if (motor_current>MOTOR_CURRENT_LIMIT)
-  {
+  
+  float motor_current_limit=(time_since_last_state_change<STARTING_CURRENT_INTERVAL_MS)?MOTOR_CURRENT_LIMIT_STARTING:MOTOR_CURRENT_LIMIT_RUNNING;
 
-    stop_motor(true); // assume we reached the end
-    Serial.printf("Motor taking too much current, stopping with fault!");
-    sprintf(temp_buff,"Motor current over limit- %f",motor_current);
-    send_message(temp_buff);
-    return;
+  if (motor_current>motor_current_limit)
+  {
+    Serial.printf("Motor taking too much current, stopped with fault!");
+    char reason[40];
+    sprintf(reason,"current %f limit %f",motor_current,motor_current_limit);
+    stop_motor(true,reason); // assume we reached the end
+    return;  
   }
+
 
   // Check driver overload condition
   if (!motor_drivers_ok())
   {
-    
-    stop_motor(false);
     Serial.println("Motor driver overloaded, so stopping");
-    strcpy(temp_buff,"Motor drivers were in error state");
-    send_message(temp_buff);
+    stop_motor(false,"motor drivers");
     return;
   }
 
   // Check endstop reached
-  if (end_trip_reached() && millis()>(gate.state_change_time+gate.time_to_ignore_endstops_ms))
+  if (end_trip_reached() && time_since_last_state_change>gate.time_to_ignore_endstops_ms)
   {
     Serial.println("Reached endstop, stopping motor!");
-    stop_motor(true);
-    strcpy(temp_buff,"endstop was reached");
-    send_message(temp_buff);
-
-
+    char mess[20];
+    sprintf(mess,"endstop after %dms",time_since_last_state_change);
+    stop_motor(true,mess);
     return;
   }
 
   // Check for timeout
-  if (millis()>gate.timeout_time)
+  if (loop_time>gate.timeout_time)
   {
     Serial.println("Stopping motor due to timeout");
-    stop_motor(true);
-    send_message("motor stopped after timeout");
+    stop_motor(true,"timeout");
     return;
   }
 
+  // This one last so sending its message doesn't block one more important!
+  if (loop_time>next_current_sent_time)
+  {
+    next_current_sent_time=loop_time+SEND_CURRENT_INTERVAL_MS;
+    sprintf(temp_buff,"Motor current currently %f",motor_current);
+    send_message(temp_buff);
+    delay(300);// bit of extra loop delay to try and stop it blocking another message!
+  }
 
   return; // still moving!
 }
