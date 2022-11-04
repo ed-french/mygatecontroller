@@ -84,7 +84,7 @@ To do:
 
 #define IGNORE_ENDSTOP_DURATION_MS 60000
 
-#define WAIT_LOOP_DELAY_MS 100
+#define WAIT_LOOP_DELAY_MS 50
 
 #define PWM_CHANNEL_OPEN 0
 #define PWM_CHANNEL_CLOSE 1
@@ -888,6 +888,10 @@ void loop()
   {
     restart_esp("wifi lost");
   }
+
+
+
+  // Checking current during loop delay
   delay(WAIT_LOOP_DELAY_MS);
 
 
