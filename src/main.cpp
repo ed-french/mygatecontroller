@@ -22,12 +22,9 @@ To do:
 
 
   Parameters to adjust for final deployment
-      MOTOR_CURRENT_LIMIT
-      IGNORE_ENDSTOP_DURATION
       WAIT_LOOP_DELAY_MS
       DELAY_BEFORE_TRYING_TO_CLEAR_STUCK
       DELAY_BEFORE_CLOSING_GATE_MS
-      FULL_PWM_RATE
       HEARTBEAT_INTERVAL
       ASYNC_HTTP_LOGLEVEL_
       HTTP_REQUEST_INTERVAL
@@ -62,8 +59,6 @@ To do:
 
 #include "credentials.h" // Just includes ssid and password declarations and ota_username and ota_password
 
-//#define PIN_END_TRIP 19
-//#define END_TRIP_HIT false
 #define PIN_POSITION_SERIAL_RX 19
 #define PIN_POSITION_SERIAL_DUMMY_TX 15
 #define POSITION_SERIAL_BAUD_RATE 115200
@@ -81,14 +76,10 @@ To do:
 
 #define PIN_MOTOR_CURRENT 36
 
-#define DEFAULT_MAX_MOTOR_DURATION_MS 10000
 
-#define MOTOR_CURRENT_LIMIT_RUNNING 3.000
-#define MOTOR_CURRENT_LIMIT_STARTING 4.000
-#define SEND_CURRENT_INTERVAL_MS 1000
-#define STARTING_CURRENT_INTERVAL_MS 1000
 
-#define IGNORE_ENDSTOP_DURATION_MS 60000
+
+
 
 #define WAIT_LOOP_DELAY_MS 50
 
@@ -113,9 +104,8 @@ To do:
 #define BUTTON_PRESS_CERTAINTY_TIME_MS 75
 #define BUTTON_UNUSED_TIMEOUT_MS 2000
 
-#define DELAY_BEFORE_CLOSING_GATE_MS 10000
+#define DELAY_BEFORE_CLOSING_GATE_MS 70000
 
-#define FULL_PWM_RATE 255
 #define PWM_FREQUENCY 10000
 #define HEARTBEAT_INTERVAL_MS 600000 // 5 minutes=300000
 
@@ -195,6 +185,7 @@ struct RamState
   uint32_t last_state_change_time;
   bool error_state;
   bool reached_position;
+  uint8_t max_allowable_pwm;
 
 };
 
@@ -574,7 +565,8 @@ void change_ram_state(RamStates new_state,const char * reason)
 
 }
 
-void start_ram(float new_target_destination)
+
+void start_ram(float new_target_destination,uint8_t max_pwm_allowed=RAM_PARAM_MAX_SPEED)
 {
       ram.reached_position=false;
       Serial.printf("################\nRequest to move ram to : %f\n",new_target_destination);
@@ -584,6 +576,7 @@ void start_ram(float new_target_destination)
       ram.starting_position=position.last_good_reading;
       ram.target_position=new_target_destination;
       ram.pwm_now=20;
+      ram.max_allowable_pwm=max_pwm_allowed;
       Serial.printf("\t\t\tram destination set to: %f\n",ram.target_position);
       change_ram_state(TRYING_TO_MOVE,"ram start demanded");
       Serial.println("\t\t\tRam state now changed :->");
@@ -655,12 +648,13 @@ void update_ram()
       {
         // Hey we're in motion now!
         change_ram_state(ACCELERATING,"first movement");
+        sprintf(temp_buff,"Gate in motion to : %f",ram.target_position);
+        send_message(temp_buff);
       } else {
         if (time_since_last_state_change>RAM_PARAM_START_TIMEOUT)
         {
           /* It's been too long since trying to start moving without any noticeable movement 
           */
-          
           sprintf(temp_buff,"Ram couldn't detect movement when started after %f secs",time_since_last_state_change/1000.0);
           stop_ram(temp_buff);
           Serial.println(temp_buff);
@@ -699,10 +693,16 @@ void update_ram()
         send_message(temp_buff);
       } else {
         // Maybe accelerate some more
-        if (ram.pwm_now<RAM_PARAM_MAX_SPEED)
+        if (ram.pwm_now<ram.max_allowable_pwm)
         {
           uint8_t old_speed=ram.pwm_now;
-          ram.pwm_now=min(RAM_PARAM_MAX_SPEED,ram.pwm_now+RAM_PARAM_ACCEL);
+          uint8_t ram_param_accel=RAM_PARAM_ACCEL;
+          ram.pwm_now+=ram_param_accel;
+          if (ram.pwm_now>ram.max_allowable_pwm)
+          {
+            ram.pwm_now=ram.max_allowable_pwm;
+          }
+          
           set_motor_speed_and_direction(ram.pwm_now,open_needed);
           Serial.printf("(we have just accelerated a bit more from %d to %d !)\n",old_speed,ram.pwm_now);
         } else {
@@ -1087,7 +1087,8 @@ void setup() {
                         "\tUse /update to install new firmware remotely\n"
                         "\tUse /restart to reboot the ESP\n"
                         "\tUse /getfreeheap to see how much is free\n"
-                        "\tUse /getpinstates to see what state and raw inputs are now"
+                        "\tUse /getpinstates to see what state and raw inputs are now\n"
+                        "\tUse /move_to?position=1.244 to move the ram to a specific position"
                         "CLOSED'C'\tOPENING 'O'\tSTUCK_WHILE_OPENING 's'\tWAITING_TO_CLOSE='W'"
                         "CLOSING 'V'\tSTUCK_WHILE_CLOSING 'x'");
   });
@@ -1131,6 +1132,50 @@ void setup() {
     sprintf(temp_buff,"Free heap=%d",free);
     request->send(200,"text/plain",temp_buff);
     
+  });
+
+  server.on("/move_to",HTTP_GET,[](AsyncWebServerRequest * request) {
+    /* Parameter is move_to?position=1.2443 */
+    Serial.println("move_to request received...");
+    if (!request->hasParam("position"))
+    {
+      Serial.println("Missing position parameter from move_to request");
+      request->send(400,"text/plain","move_to requires a position parameter");
+      return;
+    }
+
+    uint16_t param_count=request->params();
+    if (param_count!=1)
+    {
+      Serial.println("Too many arguments in request to move_to");
+      request->send(400,"text/plain","too many arguments");
+      return;
+    }
+
+    AsyncWebParameter* p = request->getParam("position");
+    float new_position=atof(p->value().c_str());
+    Serial.printf("New target position requested is %f\n",new_position);
+
+    if (new_position<-0.6 || new_position>7.0)
+    {
+      sprintf(temp_buff,"Requested param (%f) is outside allowable range -0.6 -> 7.0",new_position);
+      Serial.println(temp_buff);
+      request->send(400,"text/plain",temp_buff);
+      return;
+    }
+
+
+
+    Serial.printf("\n\nWeb request received to move gate to %f\n",new_position);
+    
+    ram.state=TRYING_TO_MOVE;
+    //change_gate_state(OPENING);
+    start_ram(new_position,100);
+    strcpy(temp_buff,"OK");
+    request->send(400,"text/plain",temp_buff);
+    return;
+
+
   });
 
   server.on("/getpinstates",HTTP_GET,[](AsyncWebServerRequest *request) {
