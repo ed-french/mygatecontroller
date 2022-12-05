@@ -115,7 +115,7 @@ To do:
 #define RAM_PARAM_MAX_SPEED 255
 #define RAM_PARAM_ACCEL 5
 #define RAM_PARAM_MAX_START_CURRENT 3.0
-#define RAM_PARAM_MAX_START_PWM 100
+#define RAM_PARAM_MAX_START_PWM 175
 #define RAM_PARAM_END_STALL_CURRENT 3.0
 #define RAM_PARAM_DEFAULT_BLOCK_CURRENT_LIMIT 5.0
 #define RAM_PARAM_DESTINATION_TOLERANCE 0.3
@@ -642,6 +642,20 @@ void update_ram()
     case TRYING_TO_MOVE:
       /* INCREASING CURRENT LOOKING FOR START OF MOTION */
 
+      // Have we already arrived e.g. if open requested and it's already open
+      if (abs(position.last_good_reading-ram.target_position)<RAM_PARAM_DESTINATION_TOLERANCE)
+      {
+        // We arrived!
+        
+        sprintf(temp_buff,"arrived (pos=%f, target=%f) during start",position.last_good_reading,ram.target_position);
+        stop_ram(temp_buff);
+        change_ram_state(STOPPED,temp_buff);
+        ram.reached_position=true;
+        sprintf(temp_buff,"Ram reached dest during start: target=%f actual=%f",ram.target_position,position.last_good_reading);
+        Serial.println(temp_buff);
+        send_message(temp_buff);
+        return;
+      }
       // Are we moving?
       
       if (abs(move_so_far)>RAM_PARAM_MIN_MOVEMENT_TO_BE_STARTED)
@@ -668,9 +682,11 @@ void update_ram()
           // Increase the motor pwm but keep inside the max stalled pwm level
           uint8_t oldspeed=ram.pwm_now;
           ram.pwm_now=min(ram.pwm_now+RAM_PARAM_ACCEL,RAM_PARAM_MAX_START_PWM);
-          Serial.printf("Accelerating from %d to %d\n",oldspeed,ram.pwm_now);
+          Serial.printf("Accelerating from %d to %d as current only %f\n",oldspeed,ram.pwm_now,motor_current);
           set_motor_speed_and_direction(ram.pwm_now,open_needed);
         
+      } else {
+        Serial.printf("!!!!!! Current cap reached of %f so not accelerating more from %d\n",motor_current,ram.pwm_now);
       }
       break;
 
