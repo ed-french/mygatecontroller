@@ -123,8 +123,7 @@ To do:
 #define RAM_PARAM_DECCELERATION_PER_LOOP 20
 #define RAM_PARAM_MIN_RUNNING_PWM 100 // Approx 10v
 #define RAM_PARAM_MINIMUM_COMMAND_MOVE 1.0
-#define RAM_PARAM_START_PWM 50
-#define RAM_PARAM_MIN_MOVEMENT_TO_BE_STARTED 0.3
+#define RAM_PARAM_MIN_MOVEMENT_TO_BE_STARTED 0.2
 #define RAM_PARAM_START_TIMEOUT 8000
 #define RAM_PARAM_ACCEL_TIMEOUT 8000
 #define RAM_PARAM_RUNNING_TIMEOUT 40000
@@ -134,7 +133,7 @@ To do:
 #define RAM_PARAM_POSITION_AT_OPEN -0.2
 #define RAM_PARAM_POSITION_AT_CLOSE 6.2
 
-
+#define CAPTURE_DATA_INTERVAL_MS 500
 
 
 // Async http lib defines...
@@ -197,7 +196,14 @@ struct RelayState
   uint32_t restore_time;
 };
 
-
+float recent_current_readings[32]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+float recent_position_readings[32]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+uint32_t recent_timestamps[32]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+char recent_gate_states[33]="                                ";
+char recent_ram_states[33]="                                ";
+uint8_t recent_pwms[32]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+uint8_t next_current_reading_index=0;
+uint32_t millis_next_reading=0;
 
 RelayState twentyfourvoltrelay;
 
@@ -511,6 +517,22 @@ float get_motor_current()
   int raw=analogRead(PIN_MOTOR_CURRENT);
   float current=-gate.amps_per_bit*(raw-gate.current_zero);
   //Serial.printf("\t\tRaw motor current measurement: %d = %f Amps\n",raw,current);
+  if (millis()>millis_next_reading)
+  {
+    recent_current_readings[next_current_reading_index]=current;
+    recent_position_readings[next_current_reading_index]=position.last_good_reading;
+    recent_timestamps[next_current_reading_index]=millis();
+    recent_gate_states[next_current_reading_index]=gate.state;
+    recent_ram_states[next_current_reading_index]=ram.state;
+    recent_pwms[next_current_reading_index]=ram.pwm_now;
+    next_current_reading_index++;
+    if (next_current_reading_index>31)
+    {
+      next_current_reading_index=0;
+    }
+    millis_next_reading=millis()+CAPTURE_DATA_INTERVAL_MS;
+  }
+  
   return current;
 
 }
@@ -1097,16 +1119,30 @@ void setup() {
   Serial.println(WiFi.localIP());
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(200, "text/plain", "Hi. NunShallPass is your gate slave.\n"
+    request->send(200, "text/plain", "Hello. NunShallPass is your gate slave.\n"
                         "\t* Use /open to open the gate\n"
                         "\tuse /reboot24v to switch on and off the 24v auxilliary output\n"
                         "\tUse /update to install new firmware remotely\n"
                         "\tUse /restart to reboot the ESP\n"
                         "\tUse /getfreeheap to see how much is free\n"
                         "\tUse /getpinstates to see what state and raw inputs are now\n"
-                        "\tUse /move_to?position=1.244 to move the ram to a specific position"
-                        "CLOSED'C'\tOPENING 'O'\tSTUCK_WHILE_OPENING 's'\tWAITING_TO_CLOSE='W'"
-                        "CLOSING 'V'\tSTUCK_WHILE_CLOSING 'x'");
+                        "\tUse /get_position to see the current position\n"
+                        "\tUse /get_currents to see recent ram current levels\n"
+                        "\tUse /move_to?position=1.244 to move the ram to a specific position\n\n"
+                        "State Codes:\n"
+                        "\tCLOSED              \t'C'\n"
+                        "\tOPENING             \t'O'\n"
+                        "\tSTUCK_WHILE_OPENING \t's'\n"
+                        "\tWAITING_TO_CLOSE    \t'W'\n"
+                        "\tCLOSING             \t'V'\n"
+                        "\tSTUCK_WHILE_CLOSING \t'x'");
+  });
+
+  server.on("/get_position",HTTP_GET,[](AsyncWebServerRequest *request)
+  {
+    char response_buffer[200];
+    sprintf(response_buffer,"Current gate posn~ %f\n\t 0=Open 6=Closed",position.last_good_reading);
+    request->send(200,"text/plain",String(response_buffer));
   });
 
   server.on("/open",HTTP_GET,[](AsyncWebServerRequest *request)
@@ -1125,6 +1161,52 @@ void setup() {
     }
     request->send(200,"text/plain",temp_buff);
     
+  });
+
+  server.on("/get_currents",HTTP_GET,[](AsyncWebServerRequest * request)
+  {
+    char current_data_buffer[8192];
+    
+    strcpy(current_data_buffer,"RAM CURRENT DATA\n\n");
+    uint16_t length=strlen(current_data_buffer);
+    for (uint8_t i=0;i<32;i++)
+    {
+      length+=snprintf(current_data_buffer+length,200,"Index: %d\t"
+                                                      "Time: %d\t"
+                                                      "Amps: %f\t"
+                                                      "Position: %f\t"
+                                                      "PWM: %d\t"
+                                                      "Ram: %c\t"
+                                                      "Gate: %c\n",
+                                                      i,
+                                                      recent_timestamps[i],
+                                                      recent_current_readings[i],
+                                                      recent_position_readings[i],
+                                                      recent_pwms[i],
+                                                      recent_ram_states[i],
+                                                      recent_gate_states[i]);
+    }
+    length+=snprintf(current_data_buffer+length,400,"\n\nGate State Codes:\n"
+                        "\tCLOSED                     'C'\n"
+                        "\tOPENING                    'O'\n"
+                        "\tSTUCK_WHILE_OPENING        's'\n"
+                        "\tWAITING_TO_CLOSE           'W'\n"
+                        "\tCLOSING                    'V'\n"
+                        "\tSTUCK_WHILE_CLOSING        'x'");
+    snprintf(current_data_buffer+length,400,"\n\n Ram State Codes:\n"
+                        "\tSTOPPED                    'S'\n"
+                        "\tTRYING_TO_MOVE             'T'\n"
+                        "\tACCELERATING               'A'\n"
+                        "\tFULL_SPEED                 'F'\n"
+                        "\tDECCELERATING              'D'\n"
+                        "\tERROR_COULD_NOT_START      'J'\n"
+                        "\tERROR_BLOCKED              'B'\n"
+                        "\tERROR_GLOBAL_CURRENT_LIMIT 'I'\n"
+                        "\tERROR_TIMEOUT              'T'");
+
+
+    request->send(200,"text/plain",String(current_data_buffer));
+
   });
 
   server.on("/reboot24v",HTTP_GET,[](AsyncWebServerRequest *request) {
